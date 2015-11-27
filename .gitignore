@@ -1,0 +1,8 @@
+# Git ignore file
+doc/
+*.swp
+*~
+.project
+.DS_*
+.idea
+.secret
