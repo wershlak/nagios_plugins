@@ -33,6 +33,7 @@
 #
 # ========================= NOTES =============================
 # 11-27-2015: Version 1.0 released (Moving to PROD)
+# 12-04-2015: Now marking all states other than "ready" as critical
 # TODO: Add SNMP version 2 support
 #
 # ======================= LICENSE =============================
@@ -66,7 +67,7 @@ import logging   # for debug option
 
 # Global program variables
 __program_name__ = 'Cisco Stack'
-__version__ = 1.0
+__version__ = 1.1
 
 
 ###############################################################
@@ -309,7 +310,7 @@ def evaluate_results(stack, ring):
     for i, member in stack.iteritems():
         logging.debug('Member {0} is {1}'.format(member['number'], member['status']))
         message.append("{0}: {1}, ".format(member['number'], member['status']))
-        if member['status_num'] not in ('4', '9'):
+        if member['status_num'] is not '4':
             result = CRITICAL
             logging.debug('Status changed to CRITICAL')
     if ring == '1':
