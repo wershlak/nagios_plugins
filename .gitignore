@@ -6,3 +6,5 @@ doc/
 .DS_*
 .idea
 .secret
+credentials.yml
+venv/

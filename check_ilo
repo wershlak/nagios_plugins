@@ -1,0 +1,234 @@
+#!/usr/bin/env python
+###############################################################
+# NAME:         check_ilo
+# DESCRIPTION:  Nagios plugin to check HP ilo
+# AUTHOR:       Jeff Wolak
+# DATE:         07/22/2015
+###############################################################
+import sys
+import getopt    # for parsing options
+import logging   # for debug option
+import hpilo     # Requires python-hpilo
+import os
+import yaml      # Requires PyYAML
+
+# Global program variables
+__program_name__ = 'HP ilo'
+__version__ = 1.0
+
+
+###############################################################
+#
+# Exit codes and status messages
+#
+###############################################################
+OK = 0
+WARNING = 1
+CRITICAL = 2
+UNKNOWN = 3
+
+
+def exit_status(x):
+    return {
+        0: 'OK',
+        1: 'WARNING',
+        2: 'CRITICAL',
+        3: 'UNKNOWN'
+    }.get(x, 'UNKNOWN')
+
+
+###############################################################
+#
+# usage() - Prints out the usage and options help
+#
+###############################################################
+def usage():
+    print """
+\t-h --help\t\t- Prints out this help message
+\t-H --host <ip_address>\t- IP address of HP ilo
+\t-v --verbose\t\t- Verbose mode for debugging
+\t-t --timeout <seconds>\t- Timeout (default: 10)
+"""
+    sys.exit(UNKNOWN)
+
+
+###############################################################
+#
+# parse_args() - parses command line args and returns options
+#
+###############################################################
+def parse_args():
+    options = dict([
+        ('remote_ip', None),
+        ('timeout_val', 10)
+    ])
+    try:
+        opts, args = getopt.getopt(sys.argv[1:],
+                "hvH:t:", ["help", "host=", "verbose", "timeout="])
+    except getopt.GetoptError, err:
+        # print help information and exit:
+        print str(err)    # will print something like "option -a not recognized"
+        usage()
+    for o, a in opts:
+        if o in ("-v", "--verbose"):
+            logging.basicConfig(
+                level=logging.DEBUG,
+                format='%(asctime)s - %(funcName)s - %(message)s'
+            )
+            logging.debug('*** Debug mode started ***')
+        elif o in ("-h", "--help"):
+            usage()
+        elif o in ("-H", "--host"):
+            options['remote_ip'] = a
+        elif o in ("-t", "--timeout"):
+            options['timeout_val'] = int(a)
+        else:
+            assert False, "unhandled option"
+    # Log values for debug
+    logging.debug('Printing initial variables')
+    logging.debug('remote_ip: {0}'.format(options['remote_ip']))
+    logging.debug('timeout_val: {0}'.format(options['timeout_val']))
+    if options['remote_ip'] is None:
+        print "Requires an ilo to check"
+        usage()
+    return options
+
+
+###############################################################
+#
+# get_credentials() - reads credentials.yml
+#
+#                     ilo:
+#                       user: myusername
+#                       pass: mypassword
+#
+# :return: credentials dict
+#
+###############################################################
+def get_credentials():
+    logging.debug('Getting credentials')
+    credentials = dict([('username', ''), ('password', '')])
+    prog_dir = os.path.dirname(os.path.realpath(__file__))
+    conf_file = prog_dir + "/credentials.yml"
+    logging.debug('Reading credentials file {0}'.format(conf_file))
+    try:
+        with open(conf_file, 'r') as ymlfile:
+            cfg = yaml.load(ymlfile)
+        logging.debug('loaded credentials yaml: {0}'.format(cfg))
+        credentials['username'] = cfg['ilo']['user'].decode('ascii')
+        credentials['password'] = cfg['ilo']['pass'].decode('ascii')
+        logging.debug('Read credentials - username: {0} - password: {1}'.format(credentials['username'], credentials['password']))
+    except Exception, msg:
+        logging.debug('Failed to read credentials {0}'.format(msg))
+        plugin_exit(UNKNOWN, 'Unable to find credentials in credentials file')
+    return credentials
+
+
+###############################################################
+#
+# plugin_exit() - Prints value and exits
+# :param exitcode: Numerical or constant value
+# :param message: Message to print
+#
+###############################################################
+def plugin_exit(exitcode, message=''):
+    logging.debug('Exiting with status {0}. Message: {1}'.format(exitcode, message))
+    status = exit_status(exitcode)
+    if message:
+        print '{0} {1} - {2}'.format(__program_name__, status, message)
+    sys.exit(exitcode)
+
+
+###############################################################
+#
+# get_health() - checks the url and returns health dictionary
+# :param options: program options dict
+# :param credentials: credentials dict
+# :return: health dict
+#
+###############################################################
+def get_health(options, credentials):
+    ilo = hpilo.Ilo(options['remote_ip'], credentials['username'], credentials['password'], options['timeout_val'])
+    try:
+        health = ilo.get_embedded_health()
+        logging.debug('Ilo embedded health object: ')
+        logging.debug(health)
+    except Exception, msg:
+        logging.debug('HTTP ERROR: {0}'.format(msg))
+        plugin_exit(CRITICAL, 'Unable to get health from {0}'.format(options['remote_ip']))
+    return health
+
+
+###############################################################
+#
+# parse_health() - parses the health dict for a status
+# :param options: program options dict
+# :param health: health dict
+# :return: status code and message
+#
+###############################################################
+def parse_health(health):
+    for sub_item in ['health_at_a_glance', 'temperature', 'fans', 'power_supplies', 'vrm']:
+        logging.debug('Getting health of {0} subsystem: '.format(sub_item))
+        status, msg = __get_sub_health(health[sub_item])
+        logging.debug('{0} - {1} - {2}'.format(sub_item, status, msg))
+        if status is not OK:
+            return status, '{0} check: {1}'.format(sub_item, msg)
+    status, message = __get_drive_status(health['drives_backplanes'])
+    if status is not OK:
+        return status, message
+    return OK, 'All checked items are ok'
+
+
+# __status helper function
+# translates ilo status to NAGIOS status
+def __status(x):
+    x = x.lower()
+    return {
+        'ok': OK,
+        'other': OK,
+        'not installed': OK,
+        'not present/not installed': OK,
+        'caution': WARNING,
+        'critical': CRITICAL,
+        'failed': CRITICAL,
+        'fault': CRITICAL
+    }.get(x, UNKNOWN)
+
+
+# __get_sub_health helper function
+# Check the sub items
+def __get_sub_health(sub_health):
+    for k, v in sub_health.iteritems():
+        logging.debug('{0} is {1}'.format(k, v['status']))
+        if __status(v['status']) is not OK:
+            return __status(v['status']), '{0} is {1}'.format(k, v['status'])
+    return OK, 'All items OK'
+
+
+# __get_drive_status helper function
+# Check the drive status
+def __get_drive_status(drives):
+    for i, drive in enumerate(drives[0]['drive_bays']):
+        status = __status(drives[0]['drive_bays'][drive]['status'])
+        logging.debug('Drive {0} is {1}'.format(drive, drives[0]['drive_bays'][drive]['status']))
+        if status is not OK:
+            return status, 'Drive {0} is {1}'.format(drive, drives[0]['drive_bays'][drive]['status'])
+    return OK, 'All items OK'
+
+
+###############################################################
+#
+# main() - Main function
+#
+###############################################################
+def main():
+    options = parse_args()
+    credentials = get_credentials()
+    health = get_health(options, credentials)
+    result, message = parse_health(health)
+    plugin_exit(result, message)
+
+
+if __name__ == "__main__":
+    main()

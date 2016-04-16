@@ -1,0 +1,182 @@
+#!/usr/bin/env python
+###############################################################
+# NAME:         check_web_thing
+# DESCRIPTION:  check page for connectivity
+# AUTHOR:       Jeff Wolak
+# DATE:         07/17/2015
+###############################################################
+import sys       # for exit
+import getopt    # for parsing options
+import logging   # for debug option
+import re        # pattern match
+import requests  # Requires requests
+
+# Global Program Variables
+__program_name__ = 'Web_Thing'
+__version__ = 1.0
+
+
+###############################################################
+#
+# Exit codes and status messages
+#
+###############################################################
+OK = 0
+WARNING = 1
+CRITICAL = 2
+UNKNOWN = 3
+
+
+def exit_status(x):
+    return {
+        0: 'OK',
+        1: 'WARNING',
+        2: 'CRITICAL',
+        3: 'UNKNOWN'
+    }.get(x, 'UNKNOWN')
+
+
+###############################################################
+#
+# usage() - Prints out the usage and options help
+#
+###############################################################
+def usage():
+    print """
+\t-h --help\t\t- Prints out this help message
+\t-H --host <ip_address>\t- IP address of server
+\t-v --verbose\t\t- Verbose mode for debugging
+\t-a --thing <number>\t- Thing Version (default: 2.1.6)
+\t-t --timeout <seconds>\t- Timeout (default: 10)
+\t-p --port <number>\t- Port number (default: 8088)
+"""
+    sys.exit(UNKNOWN)
+
+
+###############################################################
+#
+# parse_args() - parses command line args and returns options
+#
+###############################################################
+def parse_args():
+    options = dict([
+        ('remote_ip', None),
+        ('thing', "2.1.6"),
+        ('timeout_val', 10),
+        ('port', 8088)
+    ])
+    try:
+        opts, args = getopt.getopt(sys.argv[1:],
+                "hvH:a:t:p:", ["help", "host=", "verbose", "thing=", "timeout=", "port="])
+    except getopt.GetoptError, err:
+        # print help information and exit:
+        print str(err)    # will print something like "option -a not recognized"
+        usage()
+    for o, a in opts:
+        if o in ("-v", "--verbose"):
+            logging.basicConfig(
+                level=logging.DEBUG,
+                format='%(asctime)s - %(funcName)s - %(message)s'
+            )
+            logging.debug('*** Debug mode started ***')
+        elif o in ("-h", "--help"):
+            usage()
+        elif o in ("-H", "--host"):
+            options['remote_ip'] = a
+        elif o in ("-a", "--thing"):
+            options['thing'] = a
+        elif o in ("-t", "--timeout"):
+            options['timeout_val'] = int(a)
+        elif o in ("-p", "--port"):
+            options['port'] = int(a)
+        else:
+            assert False, "unhandled option"
+    # Log values for debug
+    logging.debug('Printing initial variables')
+    logging.debug('remote_ip: {0}'.format(options['remote_ip']))
+    logging.debug('thing: {0}'.format(options['thing']))
+    logging.debug('timeout_val: {0}'.format(options['timeout_val']))
+    logging.debug('port: {0}'.format(options['port']))
+    if options['remote_ip'] is None:
+        print "Requires a host to check"
+        usage()
+    return options
+
+
+###############################################################
+#
+# plugin_exit() - Prints value and exits
+# :param exitcode: Numerical or constant value
+# :param message: Message to print
+#
+###############################################################
+def plugin_exit(exitcode, message=''):
+    logging.debug('Exiting with status {0}. Message: {1}'.format(exitcode, message))
+    status = exit_status(exitcode)
+    if message:
+        print '{0} {1} - {2}'.format(__program_name__, status, message)
+    sys.exit(exitcode)
+
+
+###############################################################
+#
+# check_url() - checks the url and returns exit code and message
+# :param options: program options dict
+# :return: exit code int and message string
+#
+###############################################################
+def check_url(options):
+    url = 'http://{0}:{1}/THING-URL/'.format(options['remote_ip'], options['port'])
+    logging.debug('Connecting to: {0}'.format(url))
+    # get url
+    try:
+        r = requests.get(url, timeout=options['timeout_val'])
+    except requests.exceptions.Timeout:
+        logging.debug('Timeout exceeded: {0}'.format(options['timeout_val']))
+        return CRITICAL, 'Timeout connecting to {0}'.format(options['remote_ip'])
+    except Exception, msg:
+        logging.debug('HTTP ERROR: {0}'.format(msg))
+        return CRITICAL, 'HTTP error connecting to {0}'.format(options['remote_ip'])
+    # validate result
+    logging.debug('Result text:\n\n ' + r.text)
+    logging.debug('HTTP status code: {0}'.format(r.status_code))
+    if r.status_code == 401:
+        logging.debug('returning due to auth failure')
+        return CRITICAL, 'Authorization failure connecting to {0}'.format(options['remote_ip'])
+    elif r.status_code != 200:
+        logging.debug('returning due to bad http status')
+        return CRITICAL, 'HTTP status {0} while connecting to {1}'.format(r.status_code, options['remote_ip'])
+    # check XML
+    try:
+        # EXAMPLE match - test your thing
+        match = re.search('<tr><td align=center><font color="#858585" size=1>THING&nbsp;v(\d+\.\d+\.\d+)</font></td></tr>', r.text)
+        if match:
+            version = match.group(1)
+            logging.debug('Matched version: {0}'.format(version))
+            if version != options['thing']:
+                return CRITICAL, 'Version number: {0}'.format(version)
+            else:
+                return OK, 'Version {0} online'.format(version)
+        else:
+            logging.debug('No version number match')
+            return CRITICAL, 'No version number'
+    except Exception, msg:
+        logging.debug('Unable to read output'.format(msg))
+        return UNKNOWN, 'Unable to read status'
+
+
+###############################################################
+#
+# main() - Main function
+#
+###############################################################
+def main():
+    options = parse_args()
+    result, message = check_url(options)
+    plugin_exit(result, message)
+
+
+if __name__ == "__main__":
+    # Uncomment if your python version is old and you are getting warnings
+    # requests.packages.urllib3.disable_warnings()
+    main()
